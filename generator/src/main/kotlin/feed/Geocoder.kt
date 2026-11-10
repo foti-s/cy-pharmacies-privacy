@@ -91,17 +91,23 @@ class Geocoder(private val key: String, private val cacheFile: File, overridesFi
     /** The pharmacy's town or village, kept in the cache under "town:…". */
     private fun town(area: String, district: District?): Town? {
         if (area.isBlank()) return null
-        val cacheKey = "town2:${area.trim().lowercase()}|${district?.name.orEmpty()}"
+        val cacheKey = "town3:${area.trim().lowercase()}|${district?.name.orEmpty()}"
         cache.optJSONObject(cacheKey)?.let { return townFrom(it) }
         val near = district?.let { LatLng(it.lat, it.lng) }
-        // Only places, or "Στρόβολος" finds a street called Στροβόλου somewhere.
-        val feature = first(area, "&types=$TOWN_TYPES" + near?.let { "&proximity=${it.lng},${it.lat}" }.orEmpty())
-        val center = feature?.let(::centerOf)?.takeIf { near == null || it.distanceKm(near) <= DISTRICT_REACH_KM }
+        // Only places, or "Στρόβολος" finds a street called Στροβόλου somewhere. Several
+        // places share a name (Έγκωμη is a Nicosia suburb and a village near Famagusta), and
+        // MapTiler may rank the wrong one first, so of its top matches take the one nearest
+        // the district's main town.
+        val candidates = features(area, "&types=$TOWN_TYPES" + near?.let { "&proximity=${it.lng},${it.lat}" }.orEmpty(), limit = 5)
+            .mapNotNull { f -> centerOf(f)?.let { f to it } }
+        val (feature, center) = (if (near == null) candidates.firstOrNull() else candidates
+            .filter { it.second.distanceKm(near) <= DISTRICT_REACH_KM }
+            .minByOrNull { it.second.distanceKm(near) }) ?: (null to null)
         val saved = JSONObject().apply {
             if (center != null) {
                 put("lat", center.lat)
                 put("lng", center.lng)
-                feature.optJSONArray("bbox")?.let { put("bbox", it) }
+                feature?.optJSONArray("bbox")?.let { put("bbox", it) }
             }
         }
         cache.put(cacheKey, saved)
@@ -172,11 +178,14 @@ class Geocoder(private val key: String, private val cacheFile: File, overridesFi
     }
 
     /** MapTiler's best match for [text] in Cyprus. */
-    private fun first(text: String, extra: String): JSONObject? {
+    private fun first(text: String, extra: String): JSONObject? = features(text, extra, limit = 1).firstOrNull()
+
+    /** MapTiler's top [limit] matches for [text] in Cyprus, best first. */
+    private fun features(text: String, extra: String, limit: Int): List<JSONObject> {
         lookups++
         Thread.sleep(REQUEST_GAP_MS)
         val path = URLEncoder.encode(text, "UTF-8").replace("+", "%20")
-        val url = URI("https://api.maptiler.com/geocoding/$path.json?key=$key&country=cy&limit=1&language=el$extra").toURL()
+        val url = URI("https://api.maptiler.com/geocoding/$path.json?key=$key&country=cy&limit=$limit&language=el$extra").toURL()
         val connection = (url.openConnection() as HttpURLConnection).apply {
             connectTimeout = 15_000
             readTimeout = 20_000
@@ -188,7 +197,8 @@ class Geocoder(private val key: String, private val cacheFile: File, overridesFi
         } finally {
             connection.disconnect()
         }
-        return JSONObject(body).optJSONArray("features")?.optJSONObject(0)
+        val list = JSONObject(body).optJSONArray("features") ?: return emptyList()
+        return (0 until list.length()).mapNotNull { list.optJSONObject(it) }
     }
 
     private fun centerOf(feature: JSONObject): LatLng? {
