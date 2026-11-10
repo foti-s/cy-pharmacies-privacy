@@ -1,0 +1,47 @@
+# Rebuilds feed/v1/pharmacies.json (served by GitHub Pages) from data.gov.cy and the
+# Ministry of Health every three hours. Each run commits the new file, which also keeps
+# the schedule alive: GitHub pauses scheduled runs in repositories with no activity for 60 days.
+name: Update feed
+
+on:
+  schedule:
+    - cron: "17 */3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: feed
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build the feed
+        working-directory: generator
+        env:
+          MAPTILER_KEY: ${{ secrets.MAPTILER_KEY }}
+        run: ./gradlew run --no-daemon -q
+
+      # Also after a failed or cut-short run: the address lookups it saved are worth keeping.
+      - name: Commit it
+        if: always()
+        run: |
+          git config user.name "feed-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add feed generator/geocode-cache.json
+          git diff --cached --quiet && exit 0
+          git commit -m "Update feed"
+          git push

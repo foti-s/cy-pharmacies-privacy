@@ -1,0 +1,5 @@
+# GitHub Pages publishes the privacy policy (index.html) and the pharmacy feed (feed/).
+# The generator's code and its data aren't part of the site.
+exclude:
+  - generator
+  - README.md
