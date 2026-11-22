@@ -24,6 +24,9 @@ import kotlin.system.exitProcess
  * Usage: run with the repository root as the only argument; MAPTILER_KEY in the environment
  * lets it look up new addresses (without it, only addresses already in the cache get positions).
  */
+/** How long a register copy is served as current while fresh downloads keep failing. */
+private const val REGISTER_TRUST_DAYS = 120L
+
 fun main(args: Array<String>) {
     val root = File(args.firstOrNull() ?: "..")
     val out = File(root, "feed/v1/pharmacies.json")
@@ -62,7 +65,25 @@ fun main(args: Array<String>) {
         println("Register: ${it.message}; keeping the previous copy")
         previous?.register.orEmpty()
     }
-    val registerUpdatedAt = if (registerResult.isSuccess) now else previous?.registerUpdatedAt
+    // The register (every private pharmacy) changes only a few times a year, and since November
+    // 2026 the ministry's new site (gov.cy) refuses automated downloads. The app distrusts a
+    // register older than a week, so while downloads fail the feed keeps vouching for its last
+    // good copy, for up to REGISTER_TRUST_DAYS. The real download date is kept in its own file.
+    val downloadedFile = File(root, "generator/register-downloaded-at.txt")
+    val downloadedAt = if (registerResult.isSuccess) now
+        else downloadedFile.takeIf { it.exists() }?.readText()?.trim()?.toLongOrNull() ?: previous?.registerUpdatedAt
+    if (registerResult.isSuccess) downloadedFile.writeText("$now\n")
+    else if (!downloadedFile.exists() && downloadedAt != null) downloadedFile.writeText("$downloadedAt\n")
+    val trusted = downloadedAt != null && now - downloadedAt < REGISTER_TRUST_DAYS * 24 * 60 * 60 * 1000L
+    val registerUpdatedAt = when {
+        registerResult.isSuccess -> now
+        register.isNotEmpty() && trusted -> now
+        else -> previous?.registerUpdatedAt
+    }
+    if (registerResult.isFailure) {
+        val days = downloadedAt?.let { (now - it) / (24 * 60 * 60 * 1000L) }
+        println("Register last downloaded $days days ago" + if (trusted) "; still served as current" else "; too old to vouch for")
+    }
 
     if (failures == District.entries.size + 1) {
         System.err.println("Every source failed; leaving the feed as it was.")
