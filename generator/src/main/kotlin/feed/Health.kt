@@ -220,7 +220,7 @@ private fun checkFeedJob(now: Long) {
     }
     try {
         val body = get("https://api.github.com/repos/$repo/actions/workflows/feed.yml/runs?per_page=8", token)
-        val runs = JSONObject(body).getJSONArray("runs")
+        val runs = JSONObject(body).getJSONArray("workflow_runs")
         val finished = (0 until runs.length()).map { runs.getJSONObject(it) }.filter { it.optString("status") == "completed" }
         val last = finished.firstOrNull() ?: run { info("Feed job", "No finished runs yet"); return }
         val failedRecently = finished.take(4).count { it.optString("conclusion") != "success" }
