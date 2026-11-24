@@ -1,0 +1,73 @@
+# Daily health check of the app's data and services (generator/src/main/kotlin/feed/Health.kt).
+# Problems open (or update) a GitHub issue labelled "health-check", which emails the repo owner;
+# the issue closes itself once everything is OK again. The report is also on each run's summary page.
+name: Health check
+
+on:
+  schedule:
+    - cron: "30 4 * * *" # 06:30 / 07:30 in Cyprus
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  actions: read
+
+concurrency:
+  group: health
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Run the checks
+        id: health
+        continue-on-error: true
+        working-directory: generator
+        env:
+          MAPTILER_KEY: ${{ secrets.MAPTILER_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./gradlew health --no-daemon -q
+
+      - name: Report
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          report=health-report.md
+          if [ ! -f "$report" ]; then
+            printf '## CY Pharmacies health check: ❌ The check itself crashed\n\nSee the run log: %s\n' \
+              "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > "$report"
+          fi
+          cat "$report" >> "$GITHUB_STEP_SUMMARY"
+          printf '\n[Run log](%s)\n' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" >> "$report"
+
+          gh label create health-check --color D93F0B --description "Daily health check found a problem" --force >/dev/null
+          open=$(gh issue list --label health-check --state open --json number --jq '.[0].number')
+
+          if grep -qE '❌|⚠️' "$report"; then
+            title="Health check: $(grep -m1 -oE '(❌ Something is broken|⚠️ Working, with warnings|❌ The check itself crashed)' "$report")"
+            if [ -n "$open" ]; then
+              gh issue edit "$open" --title "$title"
+              gh issue comment "$open" --body-file "$report"
+            else
+              gh issue create --label health-check --title "$title" --body-file "$report"
+            fi
+          elif [ -n "$open" ]; then
+            gh issue comment "$open" --body-file "$report"
+            gh issue close "$open" --reason completed
+          fi
+
+      - name: Fail the run if a check failed
+        if: steps.health.outcome != 'success'
+        run: exit 1
